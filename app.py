@@ -45,11 +45,10 @@ def unleashed_get(endpoint, query_string=''):
 
 
 def parse_date(date_val):
-    """Parse Unleashed /Date(ms)/ or ISO string to datetime."""
     if not date_val:
         return None
-    s = str(date_val)
     import re
+    s = str(date_val)
     m = re.search(r'\d+', s)
     if m:
         return datetime.utcfromtimestamp(int(m.group()) / 1000)
@@ -59,13 +58,11 @@ def parse_date(date_val):
         return None
 
 
-def fetch_all_pages(endpoint):
-    """Fetch all pages from an Unleashed endpoint, return list of items."""
+def fetch_pages(endpoint, qs_base, max_pages=50):
     all_items = []
     page = 1
-    while page <= 50:
-        qs = 'pageSize=200'
-        resp = unleashed_get(f'{endpoint}/{page}', qs)
+    while page <= max_pages:
+        resp = unleashed_get(f'{endpoint}/{page}', qs_base)
         if resp.status_code != 200:
             raise Exception(f'Unleashed {resp.status_code}: {resp.text[:300]}')
         data = resp.json()
@@ -112,7 +109,7 @@ def debug():
 @app.route('/stock-on-hand')
 def stock_on_hand():
     try:
-        all_items = fetch_all_pages('StockOnHand')
+        all_items = fetch_pages('StockOnHand', 'pageSize=200')
         return jsonify({'success': True, 'total': len(all_items), 'items': all_items})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -125,7 +122,7 @@ def sales_orders():
         digits = ''.join(filter(str.isdigit, raw))
         order_number = f'SO-{digits.zfill(8)}' if digits else ''
 
-        all_items = fetch_all_pages('SalesOrders')
+        all_items = fetch_pages('SalesOrders', 'pageSize=200')
 
         if order_number:
             match = next((o for o in all_items if str(o.get('OrderNumber', '')) == order_number), None)
@@ -142,6 +139,7 @@ def sales_orders():
 def revenue_summary():
     """
     Return completed sales orders filtered by date range.
+    Uses Unleashed's startDate/endDate params to reduce pages fetched.
     Query params:
       startDate: YYYY-MM-DD (default: first day of current month)
       endDate:   YYYY-MM-DD (default: today)
@@ -157,9 +155,11 @@ def revenue_summary():
         start_dt = datetime.strptime(start_str, '%Y-%m-%d')
         end_dt = datetime.strptime(end_str, '%Y-%m-%d').replace(hour=23, minute=59, second=59)
 
-        all_orders = fetch_all_pages('SalesOrders')
+        # Use Unleashed's startDate/endDate filters to minimise pages fetched
+        qs = f'pageSize=200&startDate={start_str}&endDate={end_str}&orderStatus=Completed'
+        all_orders = fetch_pages('SalesOrders', qs)
 
-        # Filter to completed orders within date range (using CompletedDate)
+        # Further filter client-side by CompletedDate to be precise
         filtered = []
         for o in all_orders:
             if o.get('OrderStatus') != 'Completed':
@@ -168,34 +168,32 @@ def revenue_summary():
             if completed and start_dt <= completed <= end_dt:
                 filtered.append(o)
 
-        # Aggregate
         total_revenue = sum(o.get('BCSubTotal', 0) for o in filtered)
         total_tax = sum(o.get('BCTaxTotal', 0) for o in filtered)
         total_inc_tax = sum(o.get('BCTotal', 0) for o in filtered)
-        order_count = len(filtered)
 
-        # Per customer breakdown
+        # Per customer
         customers = {}
         for o in filtered:
             name = o.get('Customer', {}).get('CustomerName', 'Unknown')
             if name not in customers:
-                customers[name] = {'order_count': 0, 'subtotal': 0, 'total': 0, 'orders': []}
+                customers[name] = {'order_count': 0, 'subtotal': 0.0, 'total': 0.0, 'orders': []}
             customers[name]['order_count'] += 1
             customers[name]['subtotal'] += o.get('BCSubTotal', 0)
             customers[name]['total'] += o.get('BCTotal', 0)
             customers[name]['orders'].append(o.get('OrderNumber'))
 
-        # Per salesperson breakdown
+        # Per salesperson
         salespeople = {}
         for o in filtered:
             sp = o.get('SalesPerson')
             name = sp.get('FullName', 'Unknown') if sp else 'Unassigned'
             if name not in salespeople:
-                salespeople[name] = {'order_count': 0, 'total': 0}
+                salespeople[name] = {'order_count': 0, 'total': 0.0}
             salespeople[name]['order_count'] += 1
             salespeople[name]['total'] += o.get('BCTotal', 0)
 
-        # Top products by qty sold
+        # Top products
         products = {}
         for o in filtered:
             for line in o.get('SalesOrderLines', []):
@@ -205,7 +203,7 @@ def revenue_summary():
                 qty = line.get('OrderQuantity', 0)
                 revenue = line.get('BCLineTotal', 0)
                 if code not in products:
-                    products[code] = {'description': desc, 'qty': 0, 'revenue': 0}
+                    products[code] = {'description': desc, 'qty': 0.0, 'revenue': 0.0}
                 products[code]['qty'] += qty
                 products[code]['revenue'] += revenue
 
@@ -213,7 +211,7 @@ def revenue_summary():
             'success': True,
             'period': {'start': start_str, 'end': end_str},
             'summary': {
-                'order_count': order_count,
+                'order_count': len(filtered),
                 'subtotal_excl_tax': round(total_revenue, 2),
                 'tax': round(total_tax, 2),
                 'total_incl_tax': round(total_inc_tax, 2),
@@ -228,27 +226,26 @@ def revenue_summary():
             ),
             'top_products': sorted(
                 [{'code': k, **v} for k, v in products.items()],
-                key=lambda x: x['qty'], reverse=True
+                key=lambda x: x['revenue'], reverse=True
             )[:20],
-            'orders': [
+            'orders': sorted([
                 {
                     'order_number': o.get('OrderNumber'),
                     'customer': o.get('Customer', {}).get('CustomerName'),
-                    'completed_date': parse_date(o.get('CompletedDate')).strftime('%Y-%m-%d') if parse_date(o.get('CompletedDate')) else None,
+                    'completed_date': parse_date(o.get('CompletedDate')).strftime('%d/%m/%Y') if parse_date(o.get('CompletedDate')) else None,
                     'salesperson': o.get('SalesPerson', {}).get('FullName') if o.get('SalesPerson') else None,
-                    'subtotal': o.get('BCSubTotal', 0),
-                    'tax': o.get('BCTaxTotal', 0),
-                    'total': o.get('BCTotal', 0),
+                    'subtotal': round(o.get('BCSubTotal', 0), 2),
+                    'tax': round(o.get('BCTaxTotal', 0), 2),
+                    'total': round(o.get('BCTotal', 0), 2),
                     'delivery_method': o.get('DeliveryMethod'),
                     'customer_ref': o.get('CustomerRef'),
                     'order_group': o.get('SalesOrderGroup'),
                 }
-                for o in sorted(filtered, key=lambda x: parse_date(x.get('CompletedDate')) or datetime.min, reverse=True)
-            ]
+                for o in filtered
+            ], key=lambda x: x['completed_date'] or '', reverse=True)
         })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
-
 
 
 @app.route('/purchase-orders')
@@ -258,7 +255,7 @@ def purchase_orders():
         digits = ''.join(filter(str.isdigit, raw))
         order_number = f'PO-{digits.zfill(8)}' if digits else ''
 
-        all_items = fetch_all_pages('PurchaseOrders')
+        all_items = fetch_pages('PurchaseOrders', 'pageSize=200')
 
         if order_number:
             match = next((o for o in all_items if str(o.get('OrderNumber', '')) == order_number), None)
@@ -274,7 +271,7 @@ def purchase_orders():
 @app.route('/products')
 def products():
     try:
-        all_items = fetch_all_pages('Products')
+        all_items = fetch_pages('Products', 'pageSize=200')
         return jsonify({'success': True, 'total': len(all_items), 'items': all_items})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
