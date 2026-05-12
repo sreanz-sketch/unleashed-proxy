@@ -84,7 +84,10 @@ def stock_on_hand():
 def sales_orders():
     """Fetch sales orders. Optionally filter by orderNumber (client-side match)."""
     try:
-        order_number = request.args.get('orderNumber', '').strip()
+        raw = request.args.get('orderNumber', '').strip()
+        # Normalise to SO-XXXXXXXX format
+        digits = ''.join(filter(str.isdigit, raw))
+        order_number = f'SO-{digits.zfill(8)}' if digits else ''
         all_items = []
         page = 1
         while page <= 20:
@@ -119,7 +122,10 @@ def sales_orders():
 def purchase_orders():
     """Fetch purchase orders. Optionally filter by orderNumber (client-side match)."""
     try:
-        order_number = request.args.get('orderNumber', '').strip()
+        raw = request.args.get('orderNumber', '').strip()
+        # Normalise to SO-XXXXXXXX format
+        digits = ''.join(filter(str.isdigit, raw))
+        order_number = f'SO-{digits.zfill(8)}' if digits else ''
         all_items = []
         page = 1
         while page <= 20:
