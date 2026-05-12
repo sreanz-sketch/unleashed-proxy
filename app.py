@@ -142,6 +142,7 @@ def purchase_orders():
             if page >= total_pages or len(items) < 200:
                 break
             page += 1
+            
 
         if order_number:
             all_items = [o for o in all_items if order_number in str(o.get('OrderNumber', ''))]
