@@ -8,7 +8,6 @@ from flask_cors import CORS
 
 app = Flask(__name__)
 
-# Explicitly allow all origins so claude.ai widgets can call this proxy
 CORS(app, resources={r"/*": {
     "origins": "*",
     "methods": ["GET", "OPTIONS"],
@@ -22,7 +21,6 @@ BASE_URL = 'https://api.unleashedsoftware.com'
 
 
 def get_signature(query_string, api_key):
-    """Generate HMAC-SHA256 signature from query string (per Unleashed API docs)."""
     key_bytes = api_key.encode('utf-8')
     msg_bytes = query_string.encode('utf-8')
     sig = hmac.new(key_bytes, msg_bytes, hashlib.sha256).digest()
@@ -30,7 +28,6 @@ def get_signature(query_string, api_key):
 
 
 def unleashed_get(endpoint, query_string=''):
-    """Make an authenticated GET request to the Unleashed API."""
     sig = get_signature(query_string, API_KEY)
     url = f'{BASE_URL}/{endpoint}'
     if query_string:
@@ -49,7 +46,6 @@ def unleashed_get(endpoint, query_string=''):
 
 @app.after_request
 def add_cors_headers(response):
-    """Ensure CORS headers are on every response including errors."""
     response.headers['Access-Control-Allow-Origin'] = '*'
     response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
     response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
@@ -84,6 +80,74 @@ def stock_on_hand():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+@app.route('/sales-orders')
+def sales_orders():
+    """Fetch sales orders. Optionally filter by orderNumber (client-side match)."""
+    try:
+        order_number = request.args.get('orderNumber', '').strip()
+        all_items = []
+        page = 1
+        while page <= 20:
+            qs = 'pageSize=200'
+            data = unleashed_get(f'SalesOrders/{page}', qs)
+            items = data.get('Items', [])
+            all_items.extend(items)
+            pagination = data.get('Pagination', {})
+            total_pages = pagination.get('NumberOfPages', 1)
+            # If filtering, stop early once we find a match
+            if order_number:
+                match = next((o for o in all_items if order_number in str(o.get('OrderNumber', ''))), None)
+                if match:
+                    return jsonify({'success': True, 'total': 1, 'items': [match]})
+            if page >= total_pages or len(items) < 200:
+                break
+            page += 1
+
+        # Apply filter after full fetch if not found early
+        if order_number:
+            all_items = [o for o in all_items if order_number in str(o.get('OrderNumber', ''))]
+
+        return jsonify({'success': True, 'total': len(all_items), 'items': all_items})
+    except requests.HTTPError as e:
+        body = e.response.text if e.response else ''
+        return jsonify({'success': False, 'error': f'Unleashed {e.response.status_code}: {body}'}), 502
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/purchase-orders')
+def purchase_orders():
+    """Fetch purchase orders. Optionally filter by orderNumber (client-side match)."""
+    try:
+        order_number = request.args.get('orderNumber', '').strip()
+        all_items = []
+        page = 1
+        while page <= 20:
+            qs = 'pageSize=200'
+            data = unleashed_get(f'PurchaseOrders/{page}', qs)
+            items = data.get('Items', [])
+            all_items.extend(items)
+            pagination = data.get('Pagination', {})
+            total_pages = pagination.get('NumberOfPages', 1)
+            if order_number:
+                match = next((o for o in all_items if order_number in str(o.get('OrderNumber', ''))), None)
+                if match:
+                    return jsonify({'success': True, 'total': 1, 'items': [match]})
+            if page >= total_pages or len(items) < 200:
+                break
+            page += 1
+
+        if order_number:
+            all_items = [o for o in all_items if order_number in str(o.get('OrderNumber', ''))]
+
+        return jsonify({'success': True, 'total': len(all_items), 'items': all_items})
+    except requests.HTTPError as e:
+        body = e.response.text if e.response else ''
+        return jsonify({'success': False, 'error': f'Unleashed {e.response.status_code}: {body}'}), 502
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @app.route('/products')
 def products():
     try:
@@ -107,57 +171,3 @@ def products():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
-
-
-@app.route('/sales-orders')
-def sales_orders():
-    """Fetch sales orders, optionally filtered by orderNumber."""
-    try:
-        order_number = request.args.get('orderNumber', '')
-        all_items = []
-        page = 1
-        while page <= 20:
-            qs = f'pageSize=200'
-            if order_number:
-                qs += f'&orderNumber={order_number}'
-            data = unleashed_get(f'SalesOrders/{page}', qs)
-            items = data.get('Items', [])
-            all_items.extend(items)
-            pagination = data.get('Pagination', {})
-            total_pages = pagination.get('NumberOfPages', 1)
-            if page >= total_pages or len(items) < 200:
-                break
-            page += 1
-        return jsonify({'success': True, 'total': len(all_items), 'items': all_items})
-    except requests.HTTPError as e:
-        body = e.response.text if e.response else ''
-        return jsonify({'success': False, 'error': f'Unleashed {e.response.status_code}: {body}'}), 502
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
-@app.route('/purchase-orders')
-def purchase_orders():
-    """Fetch purchase orders, optionally filtered by orderNumber."""
-    try:
-        order_number = request.args.get('orderNumber', '')
-        all_items = []
-        page = 1
-        while page <= 20:
-            qs = 'pageSize=200'
-            if order_number:
-                qs += f'&orderNumber={order_number}'
-            data = unleashed_get(f'PurchaseOrders/{page}', qs)
-            items = data.get('Items', [])
-            all_items.extend(items)
-            pagination = data.get('Pagination', {})
-            total_pages = pagination.get('NumberOfPages', 1)
-            if page >= total_pages or len(items) < 200:
-                break
-            page += 1
-        return jsonify({'success': True, 'total': len(all_items), 'items': all_items})
-    except requests.HTTPError as e:
-        body = e.response.text if e.response else ''
-        return jsonify({'success': False, 'error': f'Unleashed {e.response.status_code}: {body}'}), 502
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
