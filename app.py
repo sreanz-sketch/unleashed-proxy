@@ -250,6 +250,7 @@ def revenue_summary():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+
 @app.route('/purchase-orders')
 def purchase_orders():
     try:
